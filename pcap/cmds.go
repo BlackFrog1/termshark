@@ -106,17 +106,17 @@ func MakeCommands(decodeAs []string, args []string, pdml []string, psml []string
 
 var _ ILoaderCmds = Commands{}
 
-func (c Commands) Iface(iface string, captureFilter string, tmpfile string) IBasicCommand {
-	args := []string{"-P", "-i", iface, "-w", tmpfile}
+func (c Commands) Iface(iface string, captureFilter string, tmpFile string) IBasicCommand {
+	args := []string{"-P", "-i", iface, "-w", tmpFile}
 	if captureFilter != "" {
 		args = append(args, "-f", captureFilter)
 	}
 	return &command{Cmd: exec.Command(termshark.DumpcapBin(), args...)}
 }
 
-func (c Commands) Tail(tmpfile string) ITailCommand {
+func (c Commands) Tail(tmpFile string) ITailCommand {
 	args := termshark.TailCommand()
-	args = append(args, tmpfile)
+	args = append(args, tmpFile)
 	return &command{Cmd: exec.Command(args[0], args[1:]...)}
 }
 
@@ -128,12 +128,6 @@ func (c Commands) Psml(pcap interface{}, displayFilter string) IPcapCommand {
 	}
 
 	args := []string{
-		// "-i",
-		// "0",
-		// "-o",
-		// "0",
-		//"-f", "-o", fmt.Sprintf("/tmp/foo-%d", delme), "-s", "256", "-tt",
-		//termshark.TSharkBin(),
 		"-T", "psml",
 		"-o", "gui.column.format:\"No.\",\"%m\",\"Time\",\"%t\",\"Source\",\"%s\",\"Destination\",\"%d\",\"Protocol\",\"%p\",\"Length\",\"%L\",\"Info\",\"%i\"",
 	}
@@ -155,9 +149,7 @@ func (c Commands) Psml(pcap interface{}, displayFilter string) IPcapCommand {
 	args = append(args, c.PsmlArgs...)
 	args = append(args, c.Args...)
 
-	//cmd := exec.Command("strace", args...)
 	cmd := exec.Command(termshark.TSharkBin(), args...)
-	//cmd := exec.Command("stdbuf", args...)
 	if fifo {
 		cmd.Stdin = pcap.(io.Reader)
 	}

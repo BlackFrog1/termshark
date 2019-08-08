@@ -23,7 +23,7 @@ builds:
     - goos: windows
       goarch: arm
   ldflags:
-    - -X github.com/gcla/termshark.Version={{.Version}}
+    - -X github.com/gcla/termshark.Version={{.Env.TERMSHARK_GIT_DESCRIBE}}
 archives:
 - replacements:
     darwin: macOS
@@ -41,7 +41,7 @@ sign:
 checksum:
   name_template: 'checksums.txt'
 snapshot:
-  name_template: "{{ .Tag }}-next"
+  name_template: "{{ .Env.TERMSHARK_GIT_DESCRIBE }}"
 changelog:
   sort: asc
   filters:

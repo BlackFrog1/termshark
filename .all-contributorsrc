@@ -1,0 +1,169 @@
+{
+  "projectName": "termshark",
+  "projectOwner": "gcla",
+  "repoType": "github",
+  "repoHost": "https://github.com",
+  "files": [
+    "README.md"
+  ],
+  "imageSize": 100,
+  "commit": false,
+  "commitConvention": "none",
+  "contributors": [
+    {
+      "login": "pocc",
+      "name": "Ross Jacobs",
+      "avatar_url": "https://avatars0.githubusercontent.com/u/10995145?v=4",
+      "profile": "https://swit.sh",
+      "contributions": [
+        "code",
+        "bug"
+      ]
+    },
+    {
+      "login": "Hongarc",
+      "name": "Hongarc",
+      "avatar_url": "https://avatars1.githubusercontent.com/u/19208123?v=4",
+      "profile": "https://github.com/Hongarc",
+      "contributions": [
+        "doc"
+      ]
+    },
+    {
+      "login": "zi0r",
+      "name": "Ryan Steinmetz",
+      "avatar_url": "https://avatars0.githubusercontent.com/u/1676702?v=4",
+      "profile": "https://github.com/zi0r",
+      "contributions": [
+        "platform"
+      ]
+    },
+    {
+      "login": "NicolaiSoeborg",
+      "name": "Nicolai Søborg",
+      "avatar_url": "https://avatars2.githubusercontent.com/u/8722223?v=4",
+      "profile": "https://søb.org/",
+      "contributions": [
+        "platform"
+      ]
+    },
+    {
+      "login": "QuLogic",
+      "name": "Elliott Sales de Andrade",
+      "avatar_url": "https://avatars2.githubusercontent.com/u/302469?v=4",
+      "profile": "https://qulogic.gitlab.io/",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "rski",
+      "name": "Romanos",
+      "avatar_url": "https://avatars2.githubusercontent.com/u/2960312?v=4",
+      "profile": "http://rski.github.io",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "denyspozniak",
+      "name": "Denys",
+      "avatar_url": "https://avatars0.githubusercontent.com/u/22612345?v=4",
+      "profile": "https://github.com/denyspozniak",
+      "contributions": [
+        "bug"
+      ]
+    },
+    {
+      "login": "jerry73204",
+      "name": "jerry73204",
+      "avatar_url": "https://avatars1.githubusercontent.com/u/7629150?v=4",
+      "profile": "https://github.com/jerry73204",
+      "contributions": [
+        "platform"
+      ]
+    },
+    {
+      "login": "Thann",
+      "name": "Jon Knapp",
+      "avatar_url": "https://avatars1.githubusercontent.com/u/578515?v=4",
+      "profile": "http://thann.github.com",
+      "contributions": [
+        "platform"
+      ]
+    },
+    {
+      "login": "mharjac",
+      "name": "Mario Harjac",
+      "avatar_url": "https://avatars2.githubusercontent.com/u/2997453?v=4",
+      "profile": "https://github.com/mharjac",
+      "contributions": [
+        "platform"
+      ]
+    },
+    {
+      "login": "abenson",
+      "name": "Andrew Benson",
+      "avatar_url": "https://avatars1.githubusercontent.com/u/227317?v=4",
+      "profile": "https://github.com/abenson",
+      "contributions": [
+        "bug"
+      ]
+    },
+    {
+      "login": "sagis-tikal",
+      "name": "sagis-tikal",
+      "avatar_url": "https://avatars2.githubusercontent.com/u/46102019?v=4",
+      "profile": "https://github.com/sagis-tikal",
+      "contributions": [
+        "bug"
+      ]
+    },
+    {
+      "login": "punkymaniac",
+      "name": "punkymaniac",
+      "avatar_url": "https://avatars2.githubusercontent.com/u/9916797?v=4",
+      "profile": "https://github.com/punkymaniac",
+      "contributions": [
+        "bug"
+      ]
+    },
+    {
+      "login": "msenturk",
+      "name": "msenturk",
+      "avatar_url": "https://avatars3.githubusercontent.com/u/9482568?v=4",
+      "profile": "https://github.com/msenturk",
+      "contributions": [
+        "bug"
+      ]
+    },
+    {
+      "login": "szuecs",
+      "name": "Sandor Szücs",
+      "avatar_url": "https://avatars3.githubusercontent.com/u/50872?v=4",
+      "profile": "https://github.com/szuecs",
+      "contributions": [
+        "bug"
+      ]
+    },
+    {
+      "login": "dawidd6",
+      "name": "Dawid Dziurla",
+      "avatar_url": "https://avatars1.githubusercontent.com/u/9713907?v=4",
+      "profile": "https://github.com/dawidd6",
+      "contributions": [
+        "bug"
+      ]
+    },
+    {
+      "login": "jJit0",
+      "name": "jJit0",
+      "avatar_url": "https://avatars1.githubusercontent.com/u/23521148?v=4",
+      "profile": "https://github.com/jJit0",
+      "contributions": [
+        "bug"
+      ]
+    }
+  ],
+  "contributorsPerLine": 7
+}

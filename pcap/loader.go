@@ -21,7 +21,7 @@ import (
 	"github.com/gcla/termshark"
 	lru "github.com/hashicorp/golang-lru"
 	log "github.com/sirupsen/logrus"
-	fsnotify "gopkg.in/fsnotify.v1"
+	fsnotify "gopkg.in/fsnotify/fsnotify.v1"
 )
 
 //======================================================================
@@ -449,9 +449,12 @@ func (c *Loader) doNewFilterOperation(newfilt string, cb interface{}, fn RunFn) 
 		if c.State()&LoadingPsml != 0 {
 			c.stopLoadPsml()
 		}
+		if c.State()&LoadingPdml != 0 {
+			c.stopLoadPdml()
+		}
 
 		c.When(func() bool {
-			return c.State()&LoadingPsml == 0
+			return c.State() == 0 || c.State() == LoadingIface
 		}, func() {
 			c.doNewFilterOperation(newfilt, cb, fn)
 		})
@@ -824,8 +827,12 @@ func (c *Loader) loadPcapAsync(row int, cb interface{}) {
 	// Returns true if it's an error we should bring to user's attention
 	unexpectedError := func(err error) bool {
 		cancelled := atomic.LoadInt32(&stageIsCancelled)
-		if err != io.EOF && cancelled == 0 {
-			return true
+		if cancelled == 0 {
+			if err != io.EOF {
+				if err, ok := err.(*xml.SyntaxError); !ok || err.Msg != "unexpected EOF" {
+					return true
+				}
+			}
 		}
 		return false
 	}
@@ -1502,11 +1509,7 @@ func (c *Loader) loadPsmlAsync(cb interface{}) {
 					c.PacketPsmlHeaders = append(c.PacketPsmlHeaders, string(tok))
 					c.Unlock()
 				} else {
-					if line, err := strconv.Unquote("\"" + string(tok) + "\""); err == nil {
-						curPsml = append(curPsml, line)
-					} else {
-						curPsml = append(curPsml, string(tok))
-					}
+					curPsml = append(curPsml, string(termshark.TranslateHexCodes(tok)))
 					empty = false
 				}
 			}

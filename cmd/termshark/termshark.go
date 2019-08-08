@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -112,17 +113,24 @@ var progressHolder *holder.Widget
 var loadProgress *progress.Widget
 var loadSpinner *spinner.Widget
 
-var nullw *null.Widget
-var loadingw gowid.IWidget
-var structmsgHolder *holder.Widget
-var missingMsgw gowid.IWidget
+var nullw *null.Widget                       // empty
+var loadingw gowid.IWidget                   // "loading..."
+var singlePacketViewMsgHolder *holder.Widget // either empty or "loading..."
+var missingMsgw gowid.IWidget                // centered, holding singlePacketViewMsgHolder
+var emptyStructViewTimer *time.Ticker
+var emptyHexViewTimer *time.Ticker
 var fillSpace *fill.Widget
 var fillVBar *fill.Widget
 var colSpace *gowid.ContainerWidget
 
-var packetStructWidgets *lru.Cache
+var curPacketStructWidget *copymodetree.Widget
 var packetHexWidgets *lru.Cache
 var packetListView *rowFocusTableWidget
+
+var curExpandedStructNodes pdmltree.ExpandedPaths // a path to each expanded node in the packet, preserved while navigating
+var curStructPosition tree.IPos                   // e.g. [0, 2, 1] -> the indices of the expanded nodes
+var curPdmlPosition []string                      // e.g. [ , tcp, tcp.srcport ] -> the path from focus to root in the current struct
+var curStructWidgetState interface{}              // e.g. {linesFromTop: 1, ...} -> the positioning of the current struct widget
 
 var cacheRequests []pcap.LoadPcapSlice
 var cacheRequestsChan chan struct{} // false means started, true means finished
@@ -131,6 +139,13 @@ var loader *pcap.Loader
 var scheduler *pcap.Scheduler
 var captureFilter string // global for now, might make it possible to change in app at some point
 var tmplData map[string]interface{}
+var darkModeSwitchSet bool   // whether switch was passed at command line
+var darkModeSwitch bool      // set via command line
+var darkMode bool            // global state in app
+var autoScrollSwitchSet bool // whether switch was passed at command line
+var autoScrollSwitch bool    // set via command line
+var autoScroll bool          // true if the packet list should auto-scroll when listening on an interface.
+var newPacketsArrived bool   // true if current updates are due to new packets when listening on an interface.
 
 var fixed gowid.RenderFixed
 var flow gowid.RenderFlow
@@ -144,73 +159,130 @@ var (
 	brightBlue  gowid.RGBColor  = gowid.MakeRGBColor("#08f")
 	brightGreen gowid.RGBColor  = gowid.MakeRGBColor("#6f2")
 
-	//                                                   256 color   < 256 color
-	pktListRowSelectedBg  *modeswap.Color = modeswap.New(mediumGray, gowid.ColorBlack)
-	pktListRowFocusBg     *modeswap.Color = modeswap.New(brightBlue, gowid.ColorBlue)
-	pktListCellSelectedBg *modeswap.Color = modeswap.New(darkGray, gowid.ColorBlack)
-	pktStructSelectedBg   *modeswap.Color = modeswap.New(mediumGray, gowid.ColorBlack)
-	pktStructFocusBg      *modeswap.Color = modeswap.New(brightBlue, gowid.ColorBlue)
-	hexTopUnselectedFg    *modeswap.Color = modeswap.New(gowid.ColorWhite, gowid.ColorWhite)
-	hexTopUnselectedBg    *modeswap.Color = modeswap.New(mediumGray, gowid.ColorBlack)
-	hexTopSelectedFg      *modeswap.Color = modeswap.New(gowid.ColorWhite, gowid.ColorWhite)
-	hexTopSelectedBg      *modeswap.Color = modeswap.New(brightBlue, gowid.ColorBlue)
-	hexBottomUnselectedFg *modeswap.Color = modeswap.New(gowid.ColorBlack, gowid.ColorWhite)
-	hexBottomUnselectedBg *modeswap.Color = modeswap.New(lightGray, gowid.ColorBlack)
-	hexBottomSelectedFg   *modeswap.Color = modeswap.New(gowid.ColorBlack, gowid.ColorWhite)
-	hexBottomSelectedBg   *modeswap.Color = modeswap.New(lightGray, gowid.ColorBlack)
-	hexCurUnselectedFg    *modeswap.Color = modeswap.New(gowid.ColorWhite, gowid.ColorBlack)
-	hexCurUnselectedBg    *modeswap.Color = modeswap.New(gowid.ColorBlack, gowid.ColorWhite)
-	hexLineFg             *modeswap.Color = modeswap.New(gowid.ColorBlack, gowid.ColorWhite)
-	hexLineBg             *modeswap.Color = modeswap.New(lightGray, gowid.ColorBlack)
-	filterValidBg         *modeswap.Color = modeswap.New(brightGreen, gowid.ColorGreen)
+	//======================================================================
+	// Regular mode
+	//
 
-	palette gowid.Palette = gowid.Palette{
+	//                                                      256 color   < 256 color
+	pktListRowSelectedBgReg  *modeswap.Color = modeswap.New(mediumGray, gowid.ColorBlack)
+	pktListRowFocusBgReg     *modeswap.Color = modeswap.New(brightBlue, gowid.ColorBlue)
+	pktListCellSelectedBgReg *modeswap.Color = modeswap.New(darkGray, gowid.ColorBlack)
+	pktStructSelectedBgReg   *modeswap.Color = modeswap.New(mediumGray, gowid.ColorBlack)
+	pktStructFocusBgReg      *modeswap.Color = modeswap.New(brightBlue, gowid.ColorBlue)
+	hexTopUnselectedFgReg    *modeswap.Color = modeswap.New(gowid.ColorWhite, gowid.ColorWhite)
+	hexTopUnselectedBgReg    *modeswap.Color = modeswap.New(mediumGray, gowid.ColorBlack)
+	hexTopSelectedFgReg      *modeswap.Color = modeswap.New(gowid.ColorWhite, gowid.ColorWhite)
+	hexTopSelectedBgReg      *modeswap.Color = modeswap.New(brightBlue, gowid.ColorBlue)
+	hexBottomUnselectedFgReg *modeswap.Color = modeswap.New(gowid.ColorBlack, gowid.ColorWhite)
+	hexBottomUnselectedBgReg *modeswap.Color = modeswap.New(lightGray, gowid.ColorBlack)
+	hexBottomSelectedFgReg   *modeswap.Color = modeswap.New(gowid.ColorBlack, gowid.ColorWhite)
+	hexBottomSelectedBgReg   *modeswap.Color = modeswap.New(lightGray, gowid.ColorBlack)
+	hexCurUnselectedFgReg    *modeswap.Color = modeswap.New(gowid.ColorWhite, gowid.ColorBlack)
+	hexCurUnselectedBgReg    *modeswap.Color = modeswap.New(gowid.ColorBlack, gowid.ColorWhite)
+	hexLineFgReg             *modeswap.Color = modeswap.New(gowid.ColorBlack, gowid.ColorWhite)
+	hexLineBgReg             *modeswap.Color = modeswap.New(lightGray, gowid.ColorBlack)
+	filterValidBgReg         *modeswap.Color = modeswap.New(brightGreen, gowid.ColorGreen)
+
+	regularPalette gowid.Palette = gowid.Palette{
 		"default":                gowid.MakePaletteEntry(gowid.ColorBlack, gowid.ColorWhite),
 		"title":                  gowid.MakeForeground(gowid.ColorDarkRed),
-		"pkt-struct-focus":       gowid.MakePaletteEntry(gowid.ColorWhite, pktStructFocusBg),
-		"pkt-struct-selected":    gowid.MakePaletteEntry(gowid.ColorWhite, pktStructSelectedBg),
-		"pkt-list-row-focus":     gowid.MakePaletteEntry(gowid.ColorWhite, pktListRowFocusBg),
+		"pkt-list-row-focus":     gowid.MakePaletteEntry(gowid.ColorWhite, pktListRowFocusBgReg),
 		"pkt-list-cell-focus":    gowid.MakePaletteEntry(gowid.ColorWhite, gowid.ColorPurple),
-		"pkt-list-row-selected":  gowid.MakePaletteEntry(gowid.ColorWhite, pktListRowSelectedBg),
-		"pkt-list-cell-selected": gowid.MakePaletteEntry(gowid.ColorWhite, pktListCellSelectedBg),
+		"pkt-list-row-selected":  gowid.MakePaletteEntry(gowid.ColorWhite, pktListRowSelectedBgReg),
+		"pkt-list-cell-selected": gowid.MakePaletteEntry(gowid.ColorWhite, pktListCellSelectedBgReg),
+		"pkt-struct-focus":       gowid.MakePaletteEntry(gowid.ColorWhite, pktStructFocusBgReg),
+		"pkt-struct-selected":    gowid.MakePaletteEntry(gowid.ColorWhite, pktStructSelectedBgReg),
 		"filter-menu-focus":      gowid.MakeStyledPaletteEntry(gowid.ColorBlack, gowid.ColorWhite, gowid.StyleBold),
-		"filter-valid":           gowid.MakePaletteEntry(gowid.ColorBlack, filterValidBg),
+		"filter-valid":           gowid.MakePaletteEntry(gowid.ColorBlack, filterValidBgReg),
 		"filter-invalid":         gowid.MakePaletteEntry(gowid.ColorBlack, gowid.ColorRed),
 		"filter-intermediate":    gowid.MakePaletteEntry(gowid.ColorBlack, gowid.ColorOrange),
 		"dialog":                 gowid.MakePaletteEntry(gowid.ColorBlack, gowid.ColorYellow),
 		"dialog-buttons":         gowid.MakePaletteEntry(gowid.ColorYellow, gowid.ColorBlack),
-		"stop-load-button":       gowid.MakeForeground(gowid.ColorMagenta),
-		"stop-load-button-focus": gowid.MakePaletteEntry(gowid.ColorWhite, gowid.ColorDarkBlue),
-		"menu-button":            gowid.MakeForeground(gowid.ColorMagenta),
-		"menu-button-focus":      gowid.MakePaletteEntry(gowid.ColorWhite, gowid.ColorDarkBlue),
-		"saved-button":           gowid.MakeForeground(gowid.ColorMagenta),
-		"saved-button-focus":     gowid.MakePaletteEntry(gowid.ColorWhite, gowid.ColorDarkBlue),
-		"apply-button":           gowid.MakeForeground(gowid.ColorMagenta),
-		"apply-button-focus":     gowid.MakePaletteEntry(gowid.ColorWhite, gowid.ColorDarkBlue),
+		"button":                 gowid.MakeForeground(gowid.ColorMagenta),
+		"button-focus":           gowid.MakePaletteEntry(gowid.ColorWhite, gowid.ColorDarkBlue),
 		"progress-default":       gowid.MakeStyledPaletteEntry(gowid.ColorWhite, gowid.ColorBlack, gowid.StyleBold),
 		"progress-complete":      gowid.MakeStyleMod(gowid.MakePaletteRef("progress-default"), gowid.MakeBackground(gowid.ColorMagenta)),
 		"progress-spinner":       gowid.MakePaletteEntry(gowid.ColorYellow, gowid.ColorBlack),
 		"hex-cur-selected":       gowid.MakePaletteEntry(gowid.ColorWhite, gowid.ColorMagenta),
-		"hex-cur-unselected":     gowid.MakePaletteEntry(hexCurUnselectedFg, hexCurUnselectedBg),
-		"hex-top-selected":       gowid.MakePaletteEntry(hexTopSelectedFg, hexTopSelectedBg),
-		"hex-top-unselected":     gowid.MakePaletteEntry(hexTopUnselectedFg, hexTopUnselectedBg),
-		"hex-bottom-selected":    gowid.MakePaletteEntry(hexBottomSelectedFg, hexBottomSelectedBg),
-		"hex-bottom-unselected":  gowid.MakePaletteEntry(hexBottomUnselectedFg, hexBottomUnselectedBg),
-		"hexln-selected":         gowid.MakePaletteEntry(hexLineFg, hexLineBg),
-		"hexln-unselected":       gowid.MakePaletteEntry(hexLineFg, hexLineBg),
+		"hex-cur-unselected":     gowid.MakePaletteEntry(hexCurUnselectedFgReg, hexCurUnselectedBgReg),
+		"hex-top-selected":       gowid.MakePaletteEntry(hexTopSelectedFgReg, hexTopSelectedBgReg),
+		"hex-top-unselected":     gowid.MakePaletteEntry(hexTopUnselectedFgReg, hexTopUnselectedBgReg),
+		"hex-bottom-selected":    gowid.MakePaletteEntry(hexBottomSelectedFgReg, hexBottomSelectedBgReg),
+		"hex-bottom-unselected":  gowid.MakePaletteEntry(hexBottomUnselectedFgReg, hexBottomUnselectedBgReg),
+		"hexln-selected":         gowid.MakePaletteEntry(hexLineFgReg, hexLineBgReg),
+		"hexln-unselected":       gowid.MakePaletteEntry(hexLineFgReg, hexLineBgReg),
+		"copy-mode-indicator":    gowid.MakePaletteEntry(gowid.ColorWhite, gowid.ColorDarkRed),
+		"copy-mode":              gowid.MakePaletteEntry(gowid.ColorBlack, gowid.ColorYellow),
+	}
+
+	//======================================================================
+	// Dark mode
+	//
+
+	//                                                       256 color   < 256 color
+	pktListRowSelectedFgDark  *modeswap.Color = modeswap.New(gowid.ColorWhite, gowid.ColorBlack)
+	pktListRowSelectedBgDark  *modeswap.Color = modeswap.New(darkGray, gowid.ColorWhite)
+	pktListRowFocusBgDark     *modeswap.Color = modeswap.New(brightBlue, gowid.ColorBlue)
+	pktListCellSelectedBgDark *modeswap.Color = modeswap.New(mediumGray, gowid.ColorBlack)
+	pktStructSelectedFgDark   *modeswap.Color = modeswap.New(gowid.ColorWhite, gowid.ColorBlack)
+	pktStructSelectedBgDark   *modeswap.Color = modeswap.New(darkGray, gowid.ColorWhite)
+	pktStructFocusBgDark      *modeswap.Color = modeswap.New(brightBlue, gowid.ColorBlue)
+	hexTopUnselectedFgDark    *modeswap.Color = modeswap.New(gowid.ColorWhite, gowid.ColorBlue)
+	hexTopUnselectedBgDark    *modeswap.Color = modeswap.New(mediumGray, gowid.ColorWhite)
+	hexTopSelectedFgDark      *modeswap.Color = modeswap.New(gowid.ColorWhite, gowid.ColorWhite)
+	hexTopSelectedBgDark      *modeswap.Color = modeswap.New(brightBlue, gowid.ColorBlue)
+	hexBottomUnselectedFgDark *modeswap.Color = modeswap.New(gowid.ColorBlack, gowid.ColorBlack)
+	hexBottomUnselectedBgDark *modeswap.Color = modeswap.New(darkGray, gowid.ColorWhite)
+	hexBottomSelectedFgDark   *modeswap.Color = modeswap.New(gowid.ColorBlack, gowid.ColorBlack)
+	hexBottomSelectedBgDark   *modeswap.Color = modeswap.New(darkGray, gowid.ColorWhite)
+	hexCurUnselectedFgDark    *modeswap.Color = modeswap.New(gowid.ColorWhite, gowid.ColorMagenta)
+	hexCurUnselectedBgDark    *modeswap.Color = modeswap.New(gowid.ColorBlack, gowid.ColorWhite)
+	hexLineFgDark             *modeswap.Color = modeswap.New(gowid.ColorBlack, gowid.ColorWhite)
+	hexLineBgDark             *modeswap.Color = modeswap.New(darkGray, gowid.ColorBlack)
+	filterValidBgDark         *modeswap.Color = modeswap.New(brightGreen, gowid.ColorGreen)
+	buttonBgDark              *modeswap.Color = modeswap.New(mediumGray, gowid.ColorWhite)
+
+	darkModePalette gowid.Palette = gowid.Palette{
+		"default":                gowid.MakePaletteEntry(gowid.ColorWhite, gowid.ColorBlack),
+		"title":                  gowid.MakeForeground(gowid.ColorRed),
+		"pkt-list-row-focus":     gowid.MakePaletteEntry(gowid.ColorWhite, pktListRowFocusBgDark),
+		"pkt-list-cell-focus":    gowid.MakePaletteEntry(gowid.ColorWhite, gowid.ColorPurple),
+		"pkt-list-row-selected":  gowid.MakePaletteEntry(pktListRowSelectedFgDark, pktListRowSelectedBgDark),
+		"pkt-list-cell-selected": gowid.MakePaletteEntry(gowid.ColorWhite, pktListCellSelectedBgDark),
+		"pkt-struct-focus":       gowid.MakePaletteEntry(gowid.ColorWhite, pktStructFocusBgDark),
+		"pkt-struct-selected":    gowid.MakePaletteEntry(pktStructSelectedFgDark, pktStructSelectedBgDark),
+		"filter-menu-focus":      gowid.MakeStyledPaletteEntry(gowid.ColorWhite, gowid.ColorBlack, gowid.StyleBold),
+		"filter-valid":           gowid.MakePaletteEntry(gowid.ColorBlack, filterValidBgDark),
+		"filter-invalid":         gowid.MakePaletteEntry(gowid.ColorBlack, gowid.ColorRed),
+		"filter-intermediate":    gowid.MakePaletteEntry(gowid.ColorBlack, gowid.ColorOrange),
+		"dialog":                 gowid.MakePaletteEntry(gowid.ColorBlack, gowid.ColorYellow),
+		"dialog-buttons":         gowid.MakePaletteEntry(gowid.ColorYellow, gowid.ColorBlack),
+		"button":                 gowid.MakePaletteEntry(gowid.ColorMagenta, buttonBgDark),
+		"button-focus":           gowid.MakePaletteEntry(gowid.ColorWhite, gowid.ColorMagenta),
+		"progress-default":       gowid.MakeStyledPaletteEntry(gowid.ColorWhite, gowid.ColorBlack, gowid.StyleBold),
+		"progress-complete":      gowid.MakeStyleMod(gowid.MakePaletteRef("progress-default"), gowid.MakeBackground(gowid.ColorMagenta)),
+		"progress-spinner":       gowid.MakePaletteEntry(gowid.ColorYellow, gowid.ColorBlack),
+		"hex-cur-selected":       gowid.MakePaletteEntry(gowid.ColorWhite, gowid.ColorMagenta),
+		"hex-cur-unselected":     gowid.MakePaletteEntry(hexCurUnselectedFgDark, hexCurUnselectedBgDark),
+		"hex-top-selected":       gowid.MakePaletteEntry(hexTopSelectedFgDark, hexTopSelectedBgDark),
+		"hex-top-unselected":     gowid.MakePaletteEntry(hexTopUnselectedFgDark, hexTopUnselectedBgDark),
+		"hex-bottom-selected":    gowid.MakePaletteEntry(hexBottomSelectedFgDark, hexBottomSelectedBgDark),
+		"hex-bottom-unselected":  gowid.MakePaletteEntry(hexBottomUnselectedFgDark, hexBottomUnselectedBgDark),
+		"hexln-selected":         gowid.MakePaletteEntry(hexLineFgDark, hexLineBgDark),
+		"hexln-unselected":       gowid.MakePaletteEntry(hexLineFgDark, hexLineBgDark),
 		"copy-mode-indicator":    gowid.MakePaletteEntry(gowid.ColorWhite, gowid.ColorDarkRed),
 		"copy-mode":              gowid.MakePaletteEntry(gowid.ColorBlack, gowid.ColorYellow),
 	}
 
 	helpTmpl = template.Must(template.New("Help").Parse(`
-{{define "NameVer"}}termshark v{{.Version}}{{end}}
+{{define "NameVer"}}termshark {{.Version}}{{end}}
 
 {{define "OneLine"}}A wireshark-inspired terminal user interface for tshark. Analyze network traffic interactively from your terminal.{{end}}
 
 {{define "Header"}}{{template "NameVer" .}}
 
 {{template "OneLine"}}
-See https://github.com/gcla/termshark for more information.{{end}}
+See https://termshark.io for more information.{{end}}
 
 {{define "Footer"}}
 If --pass-thru is true (or auto, and stdout is not a tty), tshark will be
@@ -233,7 +305,7 @@ A wireshark-inspired tui for tshark. Analyze network traffic interactively from 
 'esc' - Activate menu
 't'   - In bytes view, switch hex ⟷ ascii
 '+/-' - Adjust horizontal split
-'</>' - Adjust vertical split 
+'</>' - Adjust vertical split
 '?'   - Display help
 
 In the filter, type a wireshark display filter expression.
@@ -255,7 +327,8 @@ right    - Select next inner-most widget{{end}}
 
 	// Used to determine if we should run tshark instead e.g. stdout is not a tty
 	tsopts struct {
-		PassThru string `long:"pass-thru" default:"auto" optional:"true" optional-value:"true" choice:"yes" choice:"no" choice:"auto" choice:"true" choice:"false" description:"Run tshark instead (auto => if stdout is not a tty)."`
+		PassThru    string `long:"pass-thru" default:"auto" optional:"true" optional-value:"true" choice:"yes" choice:"no" choice:"auto" choice:"true" choice:"false" description:"Run tshark instead (auto => if stdout is not a tty)."`
+		PrintIfaces bool   `short:"D" optional:"true" optional-value:"true" description:"Print a list of the interfaces on which termshark can capture."`
 	}
 
 	// Termshark's own command line arguments. Used if we don't pass through to tshark.
@@ -263,10 +336,13 @@ right    - Select next inner-most widget{{end}}
 		Iface         string         `value-name:"<interface>" short:"i" description:"Interface to read."`
 		Pcap          flags.Filename `value-name:"<file>" short:"r" description:"Pcap file to read."`
 		DecodeAs      []string       `short:"d" description:"Specify dissection of layer type." value-name:"<layer type>==<selector>,<decode-as protocol>"`
+		PrintIfaces   bool           `short:"D" optional:"true" optional-value:"true" description:"Print a list of the interfaces on which termshark can capture."`
 		DisplayFilter string         `short:"Y" description:"Apply display filter." value-name:"<displaY filter>"`
 		CaptureFilter string         `short:"f" description:"Apply capture filter." value-name:"<capture filter>"`
 		PassThru      string         `long:"pass-thru" default:"auto" optional:"true" optional-value:"true" choice:"yes" choice:"no" choice:"auto" choice:"true" choice:"false" description:"Run tshark instead (auto => if stdout is not a tty)."`
 		LogTty        string         `long:"log-tty" default:"false" optional:"true" optional-value:"true" choice:"yes" choice:"no" choice:"true" choice:"false" description:"Log to the terminal.."`
+		DarkMode      func(bool)     `long:"dark-mode" optional:"true" optional-value:"true" description:"Use dark-mode."`
+		AutoScroll    func(bool)     `long:"auto-scroll" optional:"true" optional-value:"true" description:"Automatically scroll during live capture."`
 		Help          bool           `long:"help" short:"h" optional:"true" optional-value:"true" description:"Show this help message."`
 		Version       bool           `long:"version" short:"v" optional:"true" optional-value:"true" description:"Show version information."`
 
@@ -293,6 +369,15 @@ func init() {
 	quitRequestedChan = make(chan struct{}, 1) // buffered because send happens from ui goroutine, which runs global select
 	cacheRequestsChan = make(chan struct{}, 1000)
 	cacheRequests = make([]pcap.LoadPcapSlice, 0)
+	curExpandedStructNodes = make(pdmltree.ExpandedPaths, 0, 20)
+	opts.DarkMode = func(val bool) {
+		darkModeSwitch = val
+		darkModeSwitchSet = true
+	}
+	opts.AutoScroll = func(val bool) {
+		autoScrollSwitch = val
+		autoScrollSwitchSet = true
+	}
 }
 
 //======================================================================
@@ -531,7 +616,6 @@ func swallowMouseScroll(ev *tcell.EventMouse, app gowid.IApp) bool {
 
 // run in app goroutine
 func clearPacketViews(app gowid.IApp) {
-	packetStructWidgets.Purge()
 	packetHexWidgets.Purge()
 
 	packetListViewHolder.SetSubWidget(nullw, app)
@@ -549,7 +633,7 @@ func makeStructNodeDecoration(pos tree.IPos, tr tree.IModel, wmaker tree.IWidget
 	}
 	// Note that level should never end up < 0
 
-	// We know ou tree widget will never display the root node, so everything will be indented at
+	// We know our tree widget will never display the root node, so everything will be indented at
 	// least one level. So we know this will never end up negative.
 	level := -2
 	for cur := pos; cur != nil; cur = tree.ParentPosition(cur) {
@@ -1435,7 +1519,7 @@ func clearProgressWidget(app gowid.IApp) {
 
 func setProgressWidget(app gowid.IApp) {
 	stop := button.New(text.New("Stop"))
-	stop2 := styled.NewExt(stop, gowid.MakePaletteRef("stop-load-button"), gowid.MakePaletteRef("stop-load-button-focus"))
+	stop2 := styled.NewExt(stop, gowid.MakePaletteRef("button"), gowid.MakePaletteRef("button-focus"))
 
 	stop.OnClick(gowid.MakeWidgetCallback("cb", func(app gowid.IApp, w gowid.IWidget) {
 		scheduler.RequestStopLoad(stateHandler{})
@@ -1462,19 +1546,18 @@ func setProgressWidget(app gowid.IApp) {
 	filterCols.SetDimensions(ds, app)
 }
 
+// setLowerWidgets will set the packet structure and packet hex views, if there
+// is suitable data to display. If not, they are left as-is.
 func setLowerWidgets(app gowid.IApp) {
-	var sw1 gowid.IWidget = missingMsgw
-	var sw2 gowid.IWidget = missingMsgw
+	var sw1 gowid.IWidget
+	var sw2 gowid.IWidget
 	if packetListView != nil {
 		if fxy, err := packetListView.FocusXY(); err == nil {
-			row2 := fxy.Row
-			row3, _ := packetListView.Model().RowIdentifier(row2)
-			row := int(row3)
+			row2, _ := packetListView.Model().RowIdentifier(fxy.Row)
+			row := int(row2)
 
 			hex := getHexWidgetToDisplay(row)
-			if hex == nil {
-				sw1 = missingMsgw
-			} else {
+			if hex != nil {
 				// The 't' key will switch from hex <-> ascii
 				sw1 = enableselected.New(appkeys.New(
 					hex,
@@ -1483,17 +1566,29 @@ func setLowerWidgets(app gowid.IApp) {
 					}).SwitchView,
 				))
 			}
-			//str := getStructWidgetToDisplay(row, hex)
 			str := getStructWidgetToDisplay(row, app)
-			if str == nil {
-				sw2 = missingMsgw
-			} else {
+			if str != nil {
 				sw2 = enableselected.New(str)
 			}
 		}
 	}
-	packetHexViewHolder.SetSubWidget(sw1, app)
-	packetStructureViewHolder.SetSubWidget(sw2, app)
+	if sw1 != nil {
+		packetHexViewHolder.SetSubWidget(sw1, app)
+		emptyHexViewTimer = nil
+	} else {
+		if emptyHexViewTimer == nil {
+			startEmptyHexViewTimer()
+		}
+	}
+	if sw2 != nil {
+		packetStructureViewHolder.SetSubWidget(sw2, app)
+		emptyStructViewTimer = nil
+	} else {
+		if emptyStructViewTimer == nil {
+			startEmptyStructViewTimer()
+		}
+	}
+
 }
 
 func makePacketListModel(packetPsmlHeaders []string, packetPsmlData [][]string, app gowid.IApp) *psmltable.Model {
@@ -1534,7 +1629,21 @@ func makePacketListModel(packetPsmlHeaders []string, packetPsmlData [][]string, 
 
 func updatePacketListWithData(packetPsmlHeaders []string, packetPsmlData [][]string, app gowid.IApp) {
 	model := makePacketListModel(packetPsmlHeaders, packetPsmlData, app)
+	newPacketsArrived = true
 	packetListTable.SetModel(model, app)
+	newPacketsArrived = false
+	if autoScroll {
+		coords, err := packetListView.FocusXY()
+		if err == nil {
+			coords.Row = packetListTable.Length() - 1
+			newPacketsArrived = true
+			// Set focus on the last item in the view, then...
+			packetListView.SetFocusXY(app, coords)
+			newPacketsArrived = false
+		}
+		// ... adjust the widget so it is rendering with the last item at the bottom.
+		packetListTable.GoToBottom(app)
+	}
 }
 
 func setPacketListWidgets(packetPsmlHeaders []string, packetPsmlData [][]string, app gowid.IApp) {
@@ -1549,6 +1658,13 @@ func setPacketListWidgets(packetPsmlHeaders []string, packetPsmlData [][]string,
 		if err != nil {
 			return
 		}
+
+		if !newPacketsArrived {
+			// this focus change must've been user-initiated, so stop auto-scrolling with new packets.
+			// This mimics Wireshark's behavior.
+			autoScroll = false
+		}
+
 		row2 := fxy.Row
 		row3, gotrow := packetListView.Model().RowIdentifier(row2)
 		row := int(row3)
@@ -1588,10 +1704,8 @@ func setPacketListWidgets(packetPsmlHeaders []string, packetPsmlData [][]string,
 }
 
 func expandStructWidgetAtPosition(row int, pos int, app gowid.IApp) {
-	if val, ok := packetStructWidgets.Get(row); ok {
-		trw := val.(*copymodetree.Widget)
-
-		walker := trw.Walker().(*termshark.NoRootWalker)
+	if curPacketStructWidget != nil {
+		walker := curPacketStructWidget.Walker().(*termshark.NoRootWalker)
 		curTree := walker.Tree().(*pdmltree.Model)
 
 		finalPos := make([]int, 0)
@@ -1612,7 +1726,7 @@ func expandStructWidgetAtPosition(row int, pos int, app gowid.IApp) {
 				}
 			}
 			if chosenTree != nil {
-				chosenTree.Expanded = true
+				chosenTree.SetCollapsed(app, false)
 				finalPos = append(finalPos, chosenIdx+hack)
 				curTree = chosenTree
 				hack = 0
@@ -1622,13 +1736,23 @@ func expandStructWidgetAtPosition(row int, pos int, app gowid.IApp) {
 			}
 		}
 		if len(finalPos) > 0 {
-			tp := tree.NewPosExt(finalPos)
+			curStructPosition = tree.NewPosExt(finalPos)
 			// this is to account for the fact that noRootWalker returns the next widget
 			// in the tree. Whatever position we find, we need to go back one to make up for this.
-			walker.SetFocus(tp, app)
-			trw.GoToMiddle(app)
+			walker.SetFocus(curStructPosition, app)
+
+			curPacketStructWidget.GoToMiddle(app)
+			curStructWidgetState = curPacketStructWidget.State()
+
+			updateCurrentPdmlPosition(walker.Tree())
 		}
 	}
+}
+
+func updateCurrentPdmlPosition(tr tree.IModel) {
+	treeAtCurPos := curStructPosition.GetSubStructure(tr)
+	// Save [/, tcp, tcp.srcport] - so we can apply if user moves in packet list
+	curPdmlPosition = treeAtCurPos.(*pdmltree.Model).PathToRoot()
 }
 
 func getLayersFromStructWidget(row int, pos int) []hexdumper.LayerStyler {
@@ -1643,7 +1767,7 @@ func getLayersFromStructWidget(row int, pos int) []hexdumper.LayerStyler {
 				log.Fatal(err)
 			}
 
-			tr := pdmltree.DecodePacket(data)
+			tr := pdmltree.DecodePacket(data, &curExpandedStructNodes)
 			tr.Expanded = true
 
 			layers = tr.HexLayers(pos, false)
@@ -1720,85 +1844,130 @@ func getStructWidgetKey(row int) []byte {
 }
 
 // Note - hex can be nil
+// Note - returns nil if one can't be found
 func getStructWidgetToDisplay(row int, app gowid.IApp) gowid.IWidget {
-	var res gowid.IWidget = missingMsgw
+	var res gowid.IWidget
 
-	if val, ok := packetStructWidgets.Get(row); ok {
-		res = val.(gowid.IWidget)
-	} else {
-		row2 := (row / 1000) * 1000
-		if ws, ok := loader.PacketCache.Get(row2); ok {
-			srca := ws.(pcap.CacheEntry).Pdml
-			if len(srca) > row%1000 {
-				data, err := xml.Marshal(srca[row%1000])
-				if err != nil {
-					log.Fatal(err)
+	row2 := (row / 1000) * 1000
+	if ws, ok := loader.PacketCache.Get(row2); ok {
+		srca := ws.(pcap.CacheEntry).Pdml
+		if len(srca) > row%1000 {
+			data, err := xml.Marshal(srca[row%1000])
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			tr := pdmltree.DecodePacket(data, &curExpandedStructNodes)
+			tr.Expanded = true
+
+			var pos tree.IPos = tree.NewPos()
+			pos = tree.NextPosition(pos, tr) // Start ahead by one, then never go back
+
+			rwalker := tree.NewWalker(tr, pos,
+				tree.NewCachingMaker(tree.WidgetMakerFunction(makeStructNodeWidget)),
+				tree.NewCachingDecorator(tree.DecoratorFunction(makeStructNodeDecoration)))
+			// Without the caching layer, clicking on a button has no effect
+			walker := termshark.NewNoRootWalker(rwalker)
+
+			// Send the layers represents the tree expansion to hex.
+			// This could be the user clicking inside the tree. Or it might be the position changing
+			// in the hex widget, resulting in a callback to programmatically change the tree expansion,
+			// which then calls back to the hex
+			updateHex := func(app gowid.IApp, twalker tree.ITreeWalker) {
+				newhex := getHexWidgetToDisplay(row)
+				if newhex != nil {
+
+					newtree := twalker.Tree().(*pdmltree.Model)
+					newpos := twalker.Focus().(tree.IPos)
+
+					leaf := newpos.GetSubStructure(twalker.Tree()).(*pdmltree.Model)
+
+					coverWholePacket := false
+
+					// This skips the "frame" node in the pdml that covers the entire range of bytes. If newpos
+					// is [0] then the user has chosen that node by interacting with the struct view (the hex view
+					// can't choose any position that maps to the first pdml child node) - so in this case, we
+					// send back a layer spanning the entire packet. Otherwise we don't want to send back that
+					// packet-spanning layer because it will always be the layer returned, meaning the hexdumper
+					// will always show the entire packet highlighted.
+					if newpos.Equal(tree.NewPosExt([]int{0})) {
+						coverWholePacket = true
+					}
+
+					newlayers := newtree.HexLayers(leaf.Pos, coverWholePacket)
+					if len(newlayers) > 0 {
+						newhex.SetLayers(newlayers, app)
+
+						curhexpos := newhex.Position()
+						smallestlayer := newlayers[len(newlayers)-1]
+
+						if !(smallestlayer.Start <= curhexpos && curhexpos < smallestlayer.End) {
+							// This might trigger a callback from the hex layer since the position is set. Which will call
+							// back into here. But then this logic should not be triggered because the new pos will be
+							// inside the smallest layer
+							newhex.SetPosition(smallestlayer.Start, app)
+						}
+					}
 				}
 
-				tr := pdmltree.DecodePacket(data)
-				tr.Expanded = true
+			}
 
-				var pos tree.IPos = tree.NewPos()
-				pos = tree.NextPosition(pos, tr) // Start ahead by one, then never go back
+			tb := copymodetree.New(tree.New(walker), copyModePalette{})
+			res = tb
+			// Save this in case the hex layer needs to change it
+			curPacketStructWidget = tb
 
-				// Without the caching layer, clicking on a button has no effect
-				walker := termshark.NewNoRootWalker(tree.NewWalker(tr, pos,
-					tree.NewCachingMaker(tree.WidgetMakerFunction(makeStructNodeWidget)),
-					tree.NewCachingDecorator(tree.DecoratorFunction(makeStructNodeDecoration))))
+			// if not nil, it means the user has interacted with some struct widget at least once causing
+			// a focus change. We track the current focus e.g. [0, 2, 1] - the indices through the tree leading
+			// to the focused item. We programatically adjust the focus widget of the new struct (e.g. after
+			// navigating down one in the packet list), but only if we can move focus to the same PDML field
+			// as the old struct. For example, if we are on tcp.srcport in the old packet, and we can
+			// open up tcp.srcport in the new packet, then we do so. This is not perfect, because I use the old
+			// pdml tre eposition, which is a sequence of integer indices. This means if the next packet has
+			// an extra layer before TCP, say some encapsulation, then I could still open up tcp.srcport, but
+			// I don't find it because I find the candidate focus widget using the list of integer indices.
+			if curStructPosition != nil {
 
-				// Send the layers represents the tree expansion to hex.
-				// This could be the user clicking inside the tree. Or it might be the position changing
-				// in the hex widget, resulting in a callback to programmatically change the tree expansion,
-				// which then calls back to the hex
-				updateHex := func(app gowid.IApp, twalker tree.ITreeWalker) {
-					newhex := getHexWidgetToDisplay(row)
-					if newhex != nil {
+				curPos := curStructPosition                           // e.g. [0, 2, 1]
+				treeAtCurPos := curPos.GetSubStructure(walker.Tree()) // e.g. the TCP *pdmltree.Model
+				if treeAtCurPos != nil && deep.Equal(curPdmlPosition, treeAtCurPos.(*pdmltree.Model).PathToRoot()) == nil {
+					// if the newly selected struct has a node at [0, 2, 1] and it maps to tcp.srcport via the same path,
 
-						newtree := twalker.Tree().(*pdmltree.Model)
-						newpos := twalker.Focus().(tree.IPos)
+					// set the focus widget of the new struct i.e. which leaf has focus
+					walker.SetFocus(curPos, app)
 
-						leaf := newpos.GetSubStructure(twalker.Tree()).(*pdmltree.Model)
-
-						coverWholePacket := false
-
-						// This skips the "frame" node in the pdml that covers the entire range of bytes. If newpos
-						// is [0] then the user has chosen that node by interacting with the struct view (the hex view
-						// can't choose any position that maps to the first pdml child node) - so in this case, we
-						// send back a layer spanning the entire packet. Otherwise we don't want to send back that
-						// packet-spanning layer because it will always be the layer returned, meaning the hexdumper
-						// will always show the entire packet highlighted.
-						if newpos.Equal(tree.NewPosExt([]int{0})) {
-							coverWholePacket = true
-						}
-
-						newlayers := newtree.HexLayers(leaf.Pos, coverWholePacket)
-						if len(newlayers) > 0 {
-							newhex.SetLayers(newlayers, app)
-
-							curhexpos := newhex.Position()
-							smallestlayer := newlayers[len(newlayers)-1]
-
-							if !(smallestlayer.Start <= curhexpos && curhexpos < smallestlayer.End) {
-								// This might trigger a callback from the hex layer since the position is set. Which will call
-								// back into here. But then this logic should not be triggered because the new pos will be
-								// inside the smallest layer
-								newhex.SetPosition(smallestlayer.Start, app)
-							}
-						}
+					if curStructWidgetState != nil {
+						// we scrolled the previous struct a bit, apply it to the new one too
+						tb.SetState(curStructWidgetState, app)
+					} else {
+						// First change by the user, so remember it and use it when navigating to the next
+						curStructWidgetState = tb.State()
 					}
 
 				}
 
-				walker.OnFocusChanged(tree.MakeCallback("cb", func(app gowid.IApp, twalker tree.ITreeWalker) {
-					updateHex(app, twalker)
-				}))
-
-				updateHex(app, walker)
-
-				tb := copymodetree.New(tree.New(walker), copyModePalette{})
-				res = tb
-				packetStructWidgets.Add(row, res)
+			} else {
+				curStructPosition = walker.Focus().(tree.IPos)
 			}
+
+			tb.OnFocusChanged(gowid.MakeWidgetCallback("cb", gowid.WidgetChangedFunction(func(app gowid.IApp, w gowid.IWidget) {
+				curStructWidgetState = tb.State()
+			})))
+
+			walker.OnFocusChanged(tree.MakeCallback("cb", func(app gowid.IApp, twalker tree.ITreeWalker) {
+				updateHex(app, twalker)
+				// need to save the position, so it can be applied to the next struct widget
+				// if brought into focus by packet list navigation
+				curStructPosition = walker.Focus().(tree.IPos)
+
+				updateCurrentPdmlPosition(walker.Tree())
+			}))
+
+			// Update hex at the end, having set up callbacks. We want to make sure that
+			// navigating around the hext view expands the struct view in such a way as to
+			// preserve these changes when navigating the packet view
+			updateHex(app, walker)
+
 		}
 	}
 	return res
@@ -2030,10 +2199,6 @@ func (s setStructWidgets) OnClear(closeMe chan<- struct{}) {
 func (s setStructWidgets) BeforeBegin(ch chan<- struct{}) {
 	s2ch := loader.Stage2FinishedChan
 
-	s.app.Run(gowid.RunFunction(func(app gowid.IApp) {
-		structmsgHolder.SetSubWidget(loadingw, s.app)
-	}))
-
 	termshark.TrackedGo(func() {
 		fn2 := func() {
 			s.app.Run(gowid.RunFunction(func(app gowid.IApp) {
@@ -2057,7 +2222,7 @@ func (s setStructWidgets) AfterEnd(ch chan<- struct{}) {
 	close(ch)
 	s.app.Run(gowid.RunFunction(func(app gowid.IApp) {
 		setLowerWidgets(app)
-		structmsgHolder.SetSubWidget(nullw, app)
+		singlePacketViewMsgHolder.SetSubWidget(nullw, app)
 	}))
 }
 
@@ -2067,6 +2232,16 @@ func (s setStructWidgets) OnError(err error, closeMe chan<- struct{}) {
 	s.app.Run(gowid.RunFunction(func(app gowid.IApp) {
 		openError(fmt.Sprintf("%v", err), app)
 	}))
+}
+
+//======================================================================
+
+func startEmptyStructViewTimer() {
+	emptyStructViewTimer = time.NewTicker(time.Duration(500) * time.Millisecond)
+}
+
+func startEmptyHexViewTimer() {
+	emptyHexViewTimer = time.NewTicker(time.Duration(500) * time.Millisecond)
 }
 
 //======================================================================
@@ -2112,6 +2287,13 @@ func main() {
 }
 
 func cmain() int {
+	sigChan := make(chan os.Signal, 100)
+	if runtime.GOOS == "windows" {
+		signal.Notify(sigChan, os.Interrupt)
+	} else {
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
+	}
+
 	viper.SetConfigName("termshark") // no need to include file extension - looks for file called termshark.ini for example
 
 	stdConf := configdir.New("", "termshark")
@@ -2161,7 +2343,11 @@ func cmain() int {
 	// Run after accessing the config so I can use the configured tshark binary, if there is one. I need that
 	// binary in the case that termshark is run where stdout is not a tty, in which case I exec tshark - but
 	// it makes sense to use the one in termshark.toml
-	if passthru && (flagIsTrue(tsopts.PassThru) || (tsopts.PassThru == "auto" && !isatty.IsTerminal(os.Stdout.Fd()))) {
+	if passthru &&
+		(flagIsTrue(tsopts.PassThru) ||
+			(tsopts.PassThru == "auto" && !isatty.IsTerminal(os.Stdout.Fd())) ||
+			tsopts.PrintIfaces) {
+
 		bin, err := exec.LookPath(tsharkBin)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error looking up tshark binary: %v\n", err)
@@ -2230,6 +2416,10 @@ func cmain() int {
 	// argument is a pcap file e.g. termshark foo.pcap
 	if pcapf == "" && opts.Iface == "" {
 		pcapf = string(opts.Args.FilterOrFile)
+		// `termshark` => `termshark -i 1` (livecapture on default interface if no args)
+		if pcapf == "" {
+			opts.Iface = "1"
+		}
 	} else {
 		// Add it to filter args. Figure out later if they're capture or display.
 		filterArgs = append(filterArgs, opts.Args.FilterOrFile)
@@ -2278,6 +2468,12 @@ func cmain() int {
 		if _, err := os.Stat(pcapf); err != nil {
 			fmt.Fprintf(os.Stderr, "Error reading file %s: %v.\n", pcapf, err)
 			return 1
+		}
+		if pcapffile, err := os.Open(pcapf); err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading file %s: %v.\n", pcapf, err)
+			return 1
+		} else {
+			pcapffile.Close()
 		}
 	}
 
@@ -2339,7 +2535,7 @@ func cmain() int {
 		// This is the earliest version I could determine gives reliable results in termshark.
 		// tshark compiled against tag v1.10.1 doesn't populate the hex view.
 		mver, _ := semver.Make("1.10.2")
-		if tver.LTE(mver) {
+		if tver.LT(mver) {
 			fmt.Fprintf(os.Stderr, "termshark will not operate correctly with a tshark older than %v (found %v)\n", mver, tver)
 			return 1
 		}
@@ -2434,6 +2630,20 @@ func cmain() int {
 		}
 	}()
 
+	// Initialize application state for dark mode
+	if darkModeSwitchSet {
+		darkMode = darkModeSwitch
+	} else {
+		darkMode = viper.GetBool("main.dark-mode")
+	}
+
+	// Initialize application state for auto-scroll
+	if autoScrollSwitchSet {
+		autoScroll = autoScrollSwitch
+	} else {
+		autoScroll = viper.GetBool("main.auto-scroll")
+	}
+
 	//======================================================================
 	//
 	// Build the UI
@@ -2444,11 +2654,6 @@ func cmain() int {
 	if widgetCacheSize < 64 {
 		widgetCacheSize = 64
 	}
-	packetStructWidgets, err = lru.New(widgetCacheSize)
-	if err != nil {
-		fmt.Printf("Internal error: %v\n", err)
-		return 1
-	}
 	packetHexWidgets, err = lru.New(widgetCacheSize)
 	if err != nil {
 		fmt.Printf("Internal error: %v\n", err)
@@ -2458,7 +2663,7 @@ func cmain() int {
 	nullw = null.New()
 
 	loadingw = text.New("Loading, please wait...")
-	structmsgHolder = holder.New(loadingw)
+	singlePacketViewMsgHolder = holder.New(nullw)
 	fillSpace = fill.New(' ')
 	if runtime.GOOS == "windows" {
 		fillVBar = fill.New('|')
@@ -2472,7 +2677,7 @@ func cmain() int {
 	}
 
 	missingMsgw = vpadding.New( // centred
-		hpadding.New(structmsgHolder, hmiddle, fixed),
+		hpadding.New(singlePacketViewMsgHolder, hmiddle, fixed),
 		vmiddle,
 		flow,
 	)
@@ -2499,7 +2704,7 @@ func cmain() int {
 	)
 
 	openMenu := button.New(text.New("Menu"))
-	openMenu2 := styled.NewExt(openMenu, gowid.MakePaletteRef("menu-button"), gowid.MakePaletteRef("menu-button-focus"))
+	openMenu2 := styled.NewExt(openMenu, gowid.MakePaletteRef("button"), gowid.MakePaletteRef("button-focus"))
 
 	btnSite = menu.NewSite(menu.SiteOptions{YOffset: 1})
 	openMenu.OnClick(gowid.MakeWidgetCallback(gowid.ClickCB{}, func(app gowid.IApp, target gowid.IWidget) {
@@ -2542,6 +2747,16 @@ func cmain() int {
 			CB: func(app gowid.IApp, w gowid.IWidget) {
 				menu1.Close(app)
 				app.Sync()
+			},
+		},
+		simpleMenuItem{
+			Txt: "Toggle Dark Mode",
+			Key: gowid.MakeKey('d'),
+			CB: func(app gowid.IApp, w gowid.IWidget) {
+				menu1.Close(app)
+				darkMode = !darkMode
+				viper.Set("main.dark-mode", darkMode)
+				viper.WriteConfig()
 			},
 		},
 		simpleMenuItem{
@@ -2621,7 +2836,7 @@ func cmain() int {
 	progressHolder = holder.New(nullw)
 
 	applyw := button.New(text.New("Apply"))
-	applyWidget2 := styled.NewExt(applyw, gowid.MakePaletteRef("apply-button"), gowid.MakePaletteRef("apply-button-focus"))
+	applyWidget2 := styled.NewExt(applyw, gowid.MakePaletteRef("button"), gowid.MakePaletteRef("button-focus"))
 	applyWidget := disable.NewEnabled(applyWidget2)
 
 	filterWidget = filter.New(filter.Options{
@@ -2631,7 +2846,7 @@ func cmain() int {
 	defer filterWidget.Close()
 
 	applyw.OnClick(gowid.MakeWidgetCallback("cb", func(app gowid.IApp, w gowid.IWidget) {
-		scheduler.RequestNewFilter(filterWidget.Value(), makePacketViewUpdater(app))
+		scheduler.RequestNewFilter(filterWidget.Value(), saveRecents{makePacketViewUpdater(app), "", filterWidget.Value()})
 	}))
 
 	filterWidget.OnValid(gowid.MakeWidgetCallback("cb", func(app gowid.IApp, w gowid.IWidget) {
@@ -2643,7 +2858,7 @@ func cmain() int {
 	filterLabel := text.New("Filter: ")
 
 	savedw := button.New(text.New("Recent"))
-	savedWidget := styled.NewExt(savedw, gowid.MakePaletteRef("saved-button"), gowid.MakePaletteRef("saved-button-focus"))
+	savedWidget := styled.NewExt(savedw, gowid.MakePaletteRef("button"), gowid.MakePaletteRef("button-focus"))
 	savedBtnSite := menu.NewSite(menu.SiteOptions{YOffset: 1})
 	savedw.OnClick(gowid.MakeWidgetCallback("cb", func(app gowid.IApp, w gowid.IWidget) {
 		savedMenu.Open(savedBtnSite, app)
@@ -2868,9 +3083,15 @@ func cmain() int {
 
 	keylayer := appkeys.New(topview, appKeyPress)
 
+	palette := termshark.PaletteSwitcher{
+		P1:        &darkModePalette,
+		P2:        &regularPalette,
+		ChooseOne: &darkMode,
+	}
+
 	app, err = gowid.NewApp(gowid.AppArgs{
 		View:    keylayer,
-		Palette: &palette,
+		Palette: palette,
 		Log:     log.StandardLogger(),
 	})
 	if err != nil {
@@ -2930,16 +3151,18 @@ func cmain() int {
 		if pcapf, err = filepath.Abs(pcapf); err != nil {
 			fmt.Printf("Could not determine working directory: %v\n", err)
 			return 1
-		} else {
-			doit := func(app gowid.IApp) {
-				app.Run(gowid.RunFunction(func(app gowid.IApp) {
-					filterWidget.SetValue(displayFilter, app)
-				}))
-				requestLoadPcapWithCheck(pcapf, displayFilter, app)
-			}
-			validator.Valid = &filter.ValidateCB{Fn: doit, App: app}
-			validator.Validate(displayFilter)
 		}
+
+		doit := func(app gowid.IApp) {
+			app.Run(gowid.RunFunction(func(app gowid.IApp) {
+				filterWidget.SetValue(displayFilter, app)
+			}))
+			requestLoadPcapWithCheck(pcapf, displayFilter, app)
+		}
+		validator.Valid = &filter.ValidateCB{Fn: doit, App: app}
+		validator.Validate(displayFilter)
+		// no auto-scroll when reading a file
+		autoScroll = false
 	} else if useIface != "" {
 
 		// Verifies whether or not we will be able to read from the interface (hopefully)
@@ -2993,9 +3216,27 @@ Loop:
 	for {
 		var opsChan <-chan pcap.RunFn
 		var tickChan <-chan time.Time
+		var emptyStructViewChan <-chan time.Time
+		var emptyHexViewChan <-chan time.Time
 		var psmlFinChan <-chan struct{}
 		var ifaceFinChan <-chan struct{}
 		var pdmlFinChan <-chan struct{}
+
+		// For setting struct views empty. This isn't done as soon as a load is initiated because
+		// in the case we are loading from an interface and following new packets, we get an ugly
+		// blinking effect where the loading message is displayed, shortly followed by the struct or
+		// hex view which comes back from the pdml process (because the pdml process can only read
+		// up to the end of the currently seen packets, each time it has to start afresh from the
+		// beginning to get new packets). Waiting 500ms to display loading gives enough time, in
+		// practice,
+
+		if emptyStructViewTimer != nil {
+			emptyStructViewChan = emptyStructViewTimer.C
+		}
+		// For setting hex views empty
+		if emptyHexViewTimer != nil {
+			emptyHexViewChan = emptyHexViewTimer.C
+		}
 
 		if loader.State() == 0 {
 			if loader.State() != prevstate {
@@ -3047,6 +3288,9 @@ Loop:
 				scheduler.RequestStopLoad(stateHandler{})
 			}
 
+		case <-sigChan:
+			quitRequestedChan <- struct{}{}
+
 		case fn := <-opsChan:
 			// We run the requested operation - because operations are now enabled, since this channel
 			// is listening - and the result tells us when operations can be re-enabled (i.e. the target
@@ -3081,10 +3325,13 @@ Loop:
 				// apply a filter, I need to know if the load was cancelled previously because
 				// if it was cancelled, I need to load from the temp pcap; if not cancelled,
 				// (meaning still running), then I just apply a new filter and have the pcap
-				// reader read from the fifo
-				app.Run(gowid.RunFunction(func(app gowid.IApp) {
-					openError("Loading was cancelled.", app)
-				}))
+				// reader read from the fifo. Only do this if the user isn't quitting the app,
+				// otherwise it looks clumsy.
+				if !quitRequested {
+					app.Run(gowid.RunFunction(func(app gowid.IApp) {
+						openError("Loading was cancelled.", app)
+					}))
+				}
 			}
 			// Reset
 			loaderPsmlFinChan = loader.PsmlFinishedChan
@@ -3100,6 +3347,20 @@ Loop:
 			} else {
 				updateProgressBarForInterface(loader, app)
 			}
+
+		case <-emptyStructViewChan:
+			app.Run(gowid.RunFunction(func(app gowid.IApp) {
+				singlePacketViewMsgHolder.SetSubWidget(loadingw, app)
+				packetStructureViewHolder.SetSubWidget(missingMsgw, app)
+				emptyStructViewTimer = nil
+			}))
+
+		case <-emptyHexViewChan:
+			app.Run(gowid.RunFunction(func(app gowid.IApp) {
+				singlePacketViewMsgHolder.SetSubWidget(loadingw, app)
+				packetHexViewHolder.SetSubWidget(missingMsgw, app)
+				emptyHexViewTimer = nil
+			}))
 
 		case ev := <-app.TCellEvents:
 			app.HandleTCellEvent(ev, gowid.IgnoreUnhandledInput)

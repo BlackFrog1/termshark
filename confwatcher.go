@@ -29,11 +29,11 @@ func NewConfigWatcher() (*ConfigWatcher, error) {
 	}
 
 	change := make(chan struct{})
-	close := make(chan struct{})
+	cl := make(chan struct{})
 
 	res := &ConfigWatcher{
 		change: change,
-		close:  close,
+		close:  cl,
 	}
 
 	TrackedGo(func() {
@@ -47,7 +47,7 @@ func NewConfigWatcher() (*ConfigWatcher, error) {
 			case err := <-watcher.Errors:
 				log.Debugf("Error from config watcher: %v", err)
 
-			case <-close:
+			case <-cl:
 				break Loop
 			}
 		}

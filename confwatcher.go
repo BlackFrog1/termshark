@@ -9,12 +9,12 @@ import (
 	"sync"
 
 	log "github.com/sirupsen/logrus"
-	fsnotify "gopkg.in/fsnotify.v1"
+	"gopkg.in/fsnotify.v1"
 )
 
 //======================================================================
 
-var Goroutinewg *sync.WaitGroup
+var GoRoutineWg *sync.WaitGroup
 
 type ConfigWatcher struct {
 	watcher *fsnotify.Watcher
@@ -51,7 +51,7 @@ func NewConfigWatcher() (*ConfigWatcher, error) {
 				break Loop
 			}
 		}
-	}, Goroutinewg)
+	}, GoRoutineWg)
 
 	if err := watcher.Add(ConfFile("termshark.toml")); err != nil && !os.IsNotExist(err) {
 		return nil, err

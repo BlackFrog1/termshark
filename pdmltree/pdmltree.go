@@ -53,13 +53,13 @@ func (p *Iterator) Value() tree.IModel {
 
 type Model struct {
 	UiName    string            `xml:"-"`
-	Name      string            `xml:"-"` // needed for stripping geninfp from UI
+	Name      string            `xml:"-"` // needed for stripping general info from UI
 	Expanded  bool              `xml:"-"`
 	Pos       int               `xml:"-"`
 	Size      int               `xml:"-"`
 	Hide      bool              `xml:"-"`
 	Children_ []*Model          `xml:",any"`
-	Content   []byte            `xml:",innerxml"` // needed for copying PDML to clipboard
+	Content   []byte            `xml:",innerxml"` // needed for copying Packet Description Markup Language to clipboard
 	NodeName  string            `xml:"-"`
 	Attrs     map[string]string `xml:"-"`
 }
@@ -68,13 +68,13 @@ var _ tree.IModel = (*Model)(nil)
 
 // This ignores the first child, "Frame 15", because its range covers the whole packet
 // which results in me always including that in the layers for any position.
-func (n *Model) HexLayers(pos int, includeFirst bool) []hexdumper.LayerStyler {
+func (m *Model) HexLayers(pos int, includeFirst bool) []hexdumper.LayerStyler {
 	res := make([]hexdumper.LayerStyler, 0)
-	sidx := 1
+	sidX := 1
 	if includeFirst {
-		sidx = 0
+		sidX = 0
 	}
-	for _, c := range n.Children_[sidx:] {
+	for _, c := range m.Children_[sidX:] {
 		if c.Pos <= pos && pos < c.Pos+c.Size {
 			res = append(res, hexdumper.LayerStyler{
 				Start:         c.Pos,
@@ -97,40 +97,40 @@ func (n *Model) HexLayers(pos int, includeFirst bool) []hexdumper.LayerStyler {
 	return res
 }
 
-// Implement xml.Unmarshaler
-func (n *Model) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+// Implement xml.Unmarshal handler
+func (m *Model) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	var err error
-	n.Attrs = map[string]string{}
+	m.Attrs = map[string]string{}
 	for _, a := range start.Attr {
-		n.Attrs[a.Name.Local] = a.Value
+		m.Attrs[a.Name.Local] = a.Value
 		switch a.Name.Local {
 		case "pos":
-			n.Pos, err = strconv.Atoi(a.Value)
+			m.Pos, err = strconv.Atoi(a.Value)
 			if err != nil {
 				return errors.WithStack(err)
 			}
 		case "size":
-			n.Size, err = strconv.Atoi(a.Value)
+			m.Size, err = strconv.Atoi(a.Value)
 			if err != nil {
 				return errors.WithStack(err)
 			}
 		case "showname":
-			n.UiName = a.Value
+			m.UiName = a.Value
 		case "show":
-			if n.UiName == "" {
-				n.UiName = a.Value
+			if m.UiName == "" {
+				m.UiName = a.Value
 			}
 		case "hide":
-			n.Hide = (a.Value == "yes")
+			m.Hide = a.Value == "yes"
 		case "name":
-			n.Name = a.Value
+			m.Name = a.Value
 		}
 	}
 
-	n.NodeName = start.Name.Local
+	m.NodeName = start.Name.Local
 
 	type pt Model
-	res := d.DecodeElement((*pt)(n), &start)
+	res := d.DecodeElement((*pt)(m), &start)
 	return res
 }
 
@@ -148,71 +148,71 @@ func DecodePacket(data []byte) *Model { // nil if failure
 	return tr
 }
 
-func (p *Model) removeUnneeded() *Model {
-	if p.Hide {
+func (m *Model) removeUnneeded() *Model {
+	if m.Hide {
 		return nil
 	}
-	if p.Name == "geninfo" {
+	if m.Name == "geninfo" {
 		return nil
 	}
-	if p.Name == "fake-field-wrapper" { // for now...
+	if m.Name == "fake-field-wrapper" { // for now...
 		return nil
 	}
-	ch := make([]*Model, 0, len(p.Children_))
-	for _, c := range p.Children_ {
+	ch := make([]*Model, 0, len(m.Children_))
+	for _, c := range m.Children_ {
 		nc := c.removeUnneeded()
 		if nc != nil {
 			ch = append(ch, nc)
 		}
 	}
-	p.Children_ = ch
-	return p
+	m.Children_ = ch
+	return m
 }
 
-func (p *Model) Children() tree.IIterator {
-	if p.Expanded {
+func (m *Model) Children() tree.IIterator {
+	if m.Expanded {
 		return &Iterator{
-			tree: p,
+			tree: m,
 		}
 	} else {
 		return EmptyIterator{}
 	}
 }
 
-func (p *Model) HasChildren() bool {
-	return len(p.Children_) > 0
+func (m *Model) HasChildren() bool {
+	return len(m.Children_) > 0
 }
 
-func (p *Model) Leaf() string {
-	return p.UiName
+func (m *Model) Leaf() string {
+	return m.UiName
 }
 
-func (p *Model) String() string {
-	return p.stringAt(1)
+func (m *Model) String() string {
+	return m.stringAt(1)
 }
 
-func (p *Model) stringAt(level int) string {
-	x := make([]string, len(p.Children_))
-	for i, t := range p.Children_ {
+func (m *Model) stringAt(level int) string {
+	x := make([]string, len(m.Children_))
+	for i, t := range m.Children_ {
 		//x[i] = t.(*ModelExt).String2(level + 1)
 		x[i] = t.stringAt(level + 1)
 	}
-	for i, _ := range x {
+	for i := range x {
 		x[i] = strings.Repeat(" ", 2*level) + x[i]
 	}
 	if len(x) == 0 {
-		return fmt.Sprintf("[%s]", p.UiName)
+		return fmt.Sprintf("[%s]", m.UiName)
 	} else {
-		return fmt.Sprintf("[%s]\n%s", p.UiName, strings.Join(x, "\n"))
+		return fmt.Sprintf("[%s]\n%s", m.UiName, strings.Join(x, "\n"))
 	}
 }
 
 //func (p *Model) Children() tree.IIterator {
 //}
 
-func (p *Model) IsCollapsed() bool {
+func (m *Model) IsCollapsed() bool {
 	//return false
-	return !p.Expanded
+	return !m.Expanded
 	// fp := d.FullPath()
 	// if v, res := (*d.cache)[fp]; res {
 	// 	return (v == collapsed)
@@ -221,12 +221,12 @@ func (p *Model) IsCollapsed() bool {
 	// }
 }
 
-func (p *Model) SetCollapsed(app gowid.IApp, isCollapsed bool) {
+func (m *Model) SetCollapsed(app gowid.IApp, isCollapsed bool) {
 	// fp := d.FullPath()
 	if isCollapsed {
-		p.Expanded = false
+		m.Expanded = false
 	} else {
-		p.Expanded = true
+		m.Expanded = true
 	}
 }
 

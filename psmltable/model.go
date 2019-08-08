@@ -74,14 +74,14 @@ func (c *Model) HeaderWidgets() []gowid.IWidget {
 
 			sorters := c.Comparators
 			if sorters != nil {
-				sorteri := sorters[i2]
-				if sorteri != nil {
-					bmid := button.NewBare(text.New("-"))
-					bfor := button.NewBare(text.New("^"))
-					brev := button.NewBare(text.New("v"))
-					bh := holder.New(bmid)
+				compare := sorters[i2]
+				if compare != nil {
+					bMid := button.NewBare(text.New("-"))
+					bFor := button.NewBare(text.New("^"))
+					bRev := button.NewBare(text.New("v"))
+					bh := holder.New(bMid)
 					bhs[i] = bh
-					bms[i] = bmid
+					bms[i] = bMid
 
 					action := func(rev bool, next *button.Widget, app gowid.IApp) {
 						sorter := &table.SimpleTableByColumn{
@@ -101,16 +101,16 @@ func (c *Model) HeaderWidgets() []gowid.IWidget {
 						}
 					}
 
-					bmid.OnClick(gowid.MakeWidgetCallback("cb", func(app gowid.IApp, widget gowid.IWidget) {
-						action(false, bfor, app)
+					bMid.OnClick(gowid.MakeWidgetCallback("cb", func(app gowid.IApp, widget gowid.IWidget) {
+						action(false, bFor, app)
 					}))
 
-					bfor.OnClick(gowid.MakeWidgetCallback("cb", func(app gowid.IApp, widget gowid.IWidget) {
-						action(true, brev, app)
+					bFor.OnClick(gowid.MakeWidgetCallback("cb", func(app gowid.IApp, widget gowid.IWidget) {
+						action(true, bRev, app)
 					}))
 
-					brev.OnClick(gowid.MakeWidgetCallback("cb", func(app gowid.IApp, widget gowid.IWidget) {
-						action(false, bfor, app)
+					bRev.OnClick(gowid.MakeWidgetCallback("cb", func(app gowid.IApp, widget gowid.IWidget) {
+						action(false, bFor, app)
 					}))
 
 					all = columns.NewFixed(label, styled.NewFocus(bh, gowid.MakeStyledAs(gowid.StyleReverse)))
